@@ -1,0 +1,335 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Environment {
+  production
+  development
+}
+enum ParamType {
+  string
+  int
+  float
+  bool
+  date
+  secret
+}
+enum RunnerStatus {
+  online
+  offline
+}
+enum JobStatus {
+  pending
+  assigned
+  running
+  cancelling
+  success
+  failed
+  cancelled
+  timeout
+}
+enum CancelMode {
+  graceful
+  abrupt
+}
+enum LogLevel {
+  INFO
+  WARN
+  ERROR
+}
+enum QueueItemStatus {
+  new
+  waiting
+  in_progress
+  done
+  failed
+  cancelled
+}
+enum AssetScope {
+  global
+  local
+}
+
+model Organization {
+  id         String      @id @default(uuid())
+  name       String // nome do cliente (exibido no menu, perto do Sair)
+  slug       String      @unique
+  createdAt  DateTime    @default(now())
+  users      User[]
+  roles      Role[]
+  workspaces Workspace[]
+  @@map("organizations")
+}
+
+model Role {
+  id          String       @id @default(uuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id])
+  name        String
+  permissions Json         @default("{}")
+  users       User[]
+  @@map("roles")
+}
+
+model User {
+  id           String       @id @default(uuid())
+  orgId        String
+  org          Organization @relation(fields: [orgId], references: [id])
+  roleId       String?
+  role         Role?        @relation(fields: [roleId], references: [id])
+  email        String       @unique
+  name         String?
+  passwordHash String
+  totpSecret   String?
+  active       Boolean      @default(true)
+  failedLogins Int          @default(0)
+  lockedUntil  DateTime?
+  @@map("users")
+}
+
+// Ambiente do front-end: "Produção: Financeiro" = environment production + name "Financeiro".
+model Workspace {
+  id          String       @id @default(uuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id])
+  name        String
+  environment Environment
+  createdAt   DateTime     @default(now())
+  runners     Runner[]
+  automations Automation[]
+  schedules   Schedule[]
+  jobs        Job[]
+  queues      Queue[]
+  assets      Asset[]
+  @@unique([orgId, name, environment])
+  @@map("workspaces")
+}
+
+// "Máquina" do front-end. A chave de pareamento é um RegistrationToken ligado à máquina já cadastrada.
+model Runner {
+  id              String              @id @default(uuid())
+  orgId           String
+  workspaceId     String
+  workspace       Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name            String
+  hostname        String?
+  os              String?
+  version         String?
+  status          RunnerStatus        @default(offline)
+  paired          Boolean             @default(false)
+  lastHeartbeatAt DateTime?
+  credentialHash  String?
+  labels          String[]
+  createdAt       DateTime            @default(now())
+  deletedAt       DateTime? // exclusão lógica: o histórico de execuções continua
+  tokens          RegistrationToken[]
+  schedules       Schedule[]
+  jobs            Job[]
+  automations     Automation[]   @relation("AutomationRunners")
+  @@index([workspaceId])
+  @@map("runners")
+}
+
+model RegistrationToken {
+  id        String    @id @default(uuid())
+  orgId     String
+  runnerId  String
+  runner    Runner    @relation(fields: [runnerId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdBy String?
+  createdAt DateTime  @default(now())
+  @@map("registration_tokens")
+}
+
+model Automation {
+  id               String               @id @default(uuid())
+  orgId            String
+  workspaceId      String
+  workspace        Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name             String
+  description      String               @default("")
+  runners          Runner[]             @relation("AutomationRunners") // máquinas atreladas (uma ou mais); a máquina não pode ser excluída enquanto houver automações
+  currentVersionId String?              @unique
+  currentVersion   AutomationVersion?   @relation("current", fields: [currentVersionId], references: [id])
+  createdAt        DateTime             @default(now())
+  deletedAt        DateTime?
+  versions         AutomationVersion[]  @relation("versions")
+  parameters       AutomationParameter[]
+  schedules        Schedule[]
+  queues           Queue[]
+  assets           Asset[]
+  @@index([workspaceId])
+  @@map("automations")
+}
+
+model AutomationVersion {
+  id            String      @id @default(uuid())
+  automationId  String
+  automation    Automation  @relation("versions", fields: [automationId], references: [id], onDelete: Cascade)
+  version       Int
+  packagePath   String? // nulo até o upload do .zip (etapa seguinte)
+  packageSha256 String?
+  packageSize   Int?
+  entrypoint    String? // main.py ou bot.py
+  requirements  String?
+  createdAt     DateTime    @default(now())
+  currentOf     Automation? @relation("current")
+  jobs          Job[]
+  @@unique([automationId, version])
+  @@map("automation_versions")
+}
+
+// Valores do tipo secret ficam criptografados (AES-256-GCM) em `value`.
+model AutomationParameter {
+  id           String     @id @default(uuid())
+  automationId String
+  automation   Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  name         String
+  type         ParamType
+  value        String     @default("")
+  active       Boolean    @default(true) // inativo: não é enviado à automação (None no Python)
+  required     Boolean    @default(false)
+  description  String     @default("")
+  @@unique([automationId, name])
+  @@map("automation_parameters")
+}
+
+model Schedule {
+  id           String     @id @default(uuid())
+  orgId        String
+  workspaceId  String
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  automationId String
+  automation   Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  runnerId     String?
+  runner       Runner?    @relation(fields: [runnerId], references: [id])
+  labels       String[]
+  cron         String
+  timezone     String     @default("America/Sao_Paulo")
+  params       Json       @default("{}")
+  enabled      Boolean    @default(true)
+  lastRunAt    DateTime?
+  createdAt    DateTime   @default(now())
+  jobs         Job[]
+  @@map("schedules")
+}
+
+// "Execução" do front-end.
+model Job {
+  id          String            @id @default(uuid())
+  orgId       String
+  workspaceId String
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  versionId   String
+  version     AutomationVersion @relation(fields: [versionId], references: [id])
+  runnerId    String?
+  runner      Runner?           @relation(fields: [runnerId], references: [id])
+  scheduleId  String?
+  schedule    Schedule?         @relation(fields: [scheduleId], references: [id])
+  status      JobStatus         @default(pending)
+  params      Json              @default("{}")
+  priority    Int               @default(0)
+  attempts    Int               @default(0)
+  cancelMode  CancelMode?
+  queuedAt    DateTime          @default(now())
+  startedAt   DateTime?
+  lastSeenAt  DateTime? // última resposta do runner: 48 h sem resposta => timeout ("abortada")
+  finishedAt  DateTime?
+  exitCode    Int?
+  error       String?
+  logs        JobLog[]
+  @@index([workspaceId, queuedAt])
+  @@map("jobs")
+}
+
+model JobLog {
+  id      String   @id @default(uuid())
+  jobId   String
+  job     Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  ts      DateTime @default(now())
+  level   LogLevel @default(INFO)
+  source  String   @default("orquestrador") // orquestrador | automacao | runner
+  message String
+  @@index([jobId, ts])
+  @@map("job_logs")
+}
+
+// Fila de itens de trabalho (front-end: tela Fila). Uma fila por automação (name = nome da automação).
+model Queue {
+  id          String      @id @default(uuid())
+  orgId       String
+  workspaceId String
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  automationId String?
+  automation  Automation? @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  name        String
+  description String      @default("")
+  maxAttempts Int         @default(3)
+  items       QueueItem[]
+  @@unique([workspaceId, name])
+  @@map("queues")
+}
+
+// Status da API -> rótulo do front: new=NEW, waiting=AGUARDANDO (máquina ocupada), in_progress=PROCESSANDO, done=SUCESSO, failed=FALHA, cancelled=CANCELADO.
+model QueueItem {
+  id              String          @id @default(uuid())
+  queueId         String
+  queue           Queue           @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  orgId           String
+  reference       String?
+  data            Json            @db.Json // json (não jsonb): preserva a ordem dos campos enviados pela automação
+  status          QueueItemStatus @default(new)
+  priority        Int             @default(0)
+  attempts        Int             @default(0)
+  log             String          @default("")
+  error           String?
+  createdByJobId  String?
+  processingJobId String?
+  queuedAt        DateTime        @default(now()) // entrada/reentrada na fila: define a ordem FIFO e o "Timestamp" da tela
+  seq             BigInt          @default(autoincrement()) // desempate do FIFO: itens com o mesmo queuedAt saem na ordem de inserção
+  updatedAt       DateTime        @updatedAt
+  finishedAt      DateTime?
+  @@index([queueId, status, priority, queuedAt, seq])
+  @@map("queue_items")
+}
+
+// Ativo: valor em pasta, Global (todas as automações) ou Local (uma automação). Sempre criptografado.
+model Asset {
+  id             String      @id @default(uuid())
+  orgId          String
+  workspaceId    String
+  workspace      Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder         String      @default("Geral")
+  name           String
+  type           ParamType
+  valueEncrypted String
+  keyVersion     Int         @default(1)
+  scope          AssetScope  @default(global)
+  automationId   String?
+  automation     Automation? @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  active         Boolean     @default(true)
+  description    String      @default("")
+  @@index([workspaceId, folder])
+  @@map("assets")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  orgId     String
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+  @@index([orgId, createdAt])
+  @@map("audit_logs")
+}

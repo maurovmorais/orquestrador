@@ -1,0 +1,30 @@
+# ---- Dependencias e builds ----
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# ---- Segredos e configuracao local (NUNCA versionar) ----
+# Os modelos .env.example sao versionados; os .env com senhas nao.
+.env
+.env.*
+!.env.example
+
+# ---- Dados gerados ao rodar ----
+backend/data/        # pacotes .zip enviados (quando roda sem Docker)
+verificacao.txt      # saida do verificar.bat
+*.log
+npm-debug.log*
+pgdata/
+
+# ---- Python (runner e SDK, nas proximas etapas) ----
+__pycache__/
+*.pyc
+.venv/
+
+# ---- Sistema e editores ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

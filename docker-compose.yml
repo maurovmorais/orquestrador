@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: orq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: orquestrador
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:5432:5432"]   # só este computador acessa (backend local, Prisma Studio, pgAdmin)
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U orq -d orquestrador"], interval: 5s, retries: 10 }
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on: { postgres: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgresql://orq:${POSTGRES_PASSWORD}@postgres:5432/orquestrador
+      JWT_SECRET: ${JWT_SECRET}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      FRONTEND_ORIGIN: https://${DOMAIN}
+      COOKIE_SECURE: "true"
+      PACKAGES_DIR: /data/packages
+    volumes: [packages:/data/packages]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [api]
+    ports: ["80:80", "443:443"]
+    environment: { DOMAIN: "${DOMAIN}" }
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend/dist:/srv/frontend:ro
+      - caddy_data:/data
+
+volumes: { pgdata: {}, packages: {}, caddy_data: {} }
